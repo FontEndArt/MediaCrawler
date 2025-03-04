@@ -1,0 +1,23 @@
+{
+  "crawler_type": "search",
+  "search_keywords": [
+    "搞笑",
+    "宠物"
+  ],
+  "video_id_list": [],
+  "creator_id_list": [],
+  "max_pages": 3,
+  "max_comment_pages": 3,
+  "get_comments": true,
+  "get_video_detail": true,
+  "headless": false,
+  "use_proxy": false,
+  "ip_proxy_info": {
+    "ip": "",
+    "port": "",
+    "username": "",
+    "password": ""
+  },
+  "login_type": "qrcode",
+  "cookies": ""
+}

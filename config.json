@@ -1,0 +1,20 @@
+{
+  "crawler_type": "search",
+  "search_keywords": [
+    "搞笑"
+  ],
+  "video_id_list": [],
+  "creator_id_list": [],
+  "max_pages": 1,
+  "max_comment_pages": 1,
+  "get_comments": true,
+  "get_video_detail": true,
+  "headless": true,
+  "use_proxy": false,
+  "ip_proxy_info": {
+    "ip": "",
+    "port": "",
+    "username": "",
+    "password": ""
+  }
+} 

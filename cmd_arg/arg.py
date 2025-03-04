@@ -36,6 +36,8 @@ async def parse_cmd():
                         help='where to save the data (csv or db or json)', choices=['csv', 'db', 'json'], default=config.SAVE_DATA_OPTION)
     parser.add_argument('--cookies', type=str,
                         help='cookies used for cookie login type', default=config.COOKIES)
+    parser.add_argument('--ids', type=str,
+                        help='user ids to crawl (comma separated for multiple ids)', default='')
 
     args = parser.parse_args()
 
@@ -49,3 +51,17 @@ async def parse_cmd():
     config.ENABLE_GET_SUB_COMMENTS = args.get_sub_comment
     config.SAVE_DATA_OPTION = args.save_data_option
     config.COOKIES = args.cookies
+    
+    # 处理ids参数
+    if args.ids:
+        ids_list = [id.strip() for id in args.ids.split(',')]
+        if config.PLATFORM == 'ks' and config.CRAWLER_TYPE == 'creator':
+            config.KS_CREATOR_ID_LIST = ids_list
+        elif config.PLATFORM == 'xhs' and config.CRAWLER_TYPE == 'creator':
+            config.XHS_CREATOR_ID_LIST = ids_list
+        elif config.PLATFORM == 'dy' and config.CRAWLER_TYPE == 'creator':
+            config.DY_CREATOR_ID_LIST = ids_list
+        elif config.PLATFORM == 'bili' and config.CRAWLER_TYPE == 'creator':
+            config.BILI_CREATOR_ID_LIST = ids_list
+        elif config.PLATFORM == 'wb' and config.CRAWLER_TYPE == 'creator':
+            config.WEIBO_CREATOR_ID_LIST = ids_list

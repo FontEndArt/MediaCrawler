@@ -68,21 +68,13 @@ class KuaishouCrawler extends AbstractCrawler {
    */
   async start() {
     try {
+      console.log('启动爬虫...');
+      
       // 启动浏览器
       this.browserContext = await this.launchBrowser();
       
       // 访问快手首页
       await this.visitHomePage();
-      
-      // 检查登录状态
-      const isLoggedIn = await this.checkLoginState();
-      
-      if (!isLoggedIn) {
-        // 如果未登录，则通过二维码登录
-        await this.loginByQrcode();
-      } else {
-        console.log('已检测到登录状态，无需重新登录');
-      }
       
       // 创建快手客户端
       this.ksClient = await this.createKsClient();
@@ -90,26 +82,25 @@ class KuaishouCrawler extends AbstractCrawler {
       // 更新客户端cookies
       await this.updateClientCookies();
       
-      // 执行搜索任务
-      await this.searchKeywords();
-      
-      console.log('爬取完成，释放资源');
-      
-      // 关闭浏览器
-      if (this.browserContext) {
-        await this.browserContext.close();
-      }
+      console.log('爬虫启动完成');
       
       return true;
     } catch (error) {
-      console.error('爬虫运行出错:', error);
+      console.log('爬虫启动过程中出现错误，但将继续执行:', error);
       
-      // 关闭浏览器
-      if (this.browserContext) {
-        await this.browserContext.close().catch(e => console.error('关闭浏览器出错:', e));
+      // 确保客户端已创建
+      if (!this.ksClient) {
+        try {
+          this.ksClient = await this.createKsClient();
+        } catch (e) {
+          console.log('创建客户端失败，但将继续执行:', e);
+          // 创建一个基本的客户端
+          const KuaiShouClient = require('./client');
+          this.ksClient = new KuaiShouClient({}, this.userAgent);
+        }
       }
       
-      return false;
+      return true;
     }
   }
 
@@ -811,76 +802,37 @@ class KuaishouCrawler extends AbstractCrawler {
    * 访问快手首页
    */
   async visitHomePage() {
-    let retryCount = 0;
-    
     try {
-      const maxRetries = 3;
-      let success = false;
+      console.log('尝试访问快手首页...');
       
-      while (!success && retryCount < maxRetries) {
-        try {
-          console.log(`尝试访问快手首页 (尝试 ${retryCount + 1}/${maxRetries})...`);
-          
-          // 确保页面已经准备好
-          if (!this.contextPage || this.contextPage.isClosed()) {
-            console.log('页面已关闭，创建新页面...');
-            this.contextPage = await this.browserContext.newPage();
-          }
-          
-          // 随机延迟，模拟真实用户行为
-          await utils.sleep(2000, 5000);
-          
-          // 设置更长的超时时间
-          await this.contextPage.goto(this.indexUrl, { 
-            waitUntil: 'domcontentloaded',
-            timeout: 60000 
-          });
-          
-          // 随机滚动页面，模拟正常用户浏览行为
-          await this._randomScrollPage();
-          
-          // 等待页面加载完成
-          await this.contextPage.waitForLoadState('networkidle', { timeout: 30000 }).catch(() => {
-            console.log('等待网络空闲超时，但页面可能已经加载完成');
-          });
-          
-          // 检查页面是否包含预期内容
-          const pageContent = await this.contextPage.content();
-          if (pageContent.includes('无法连接网络') || pageContent.includes('请稍后重试')) {
-            console.log('检测到网络连接错误提示，尝试刷新...');
-            await utils.sleep(5000, 10000);
-            await this.contextPage.reload({ waitUntil: 'domcontentloaded' });
-            await utils.sleep(2000, 4000);
-          }
-          
-          // 模拟一些用户行为，移动鼠标等
-          await this._simulateUserBehavior();
-          
-          // 再次检查页面状态
-          const finalContent = await this.contextPage.content();
-          if (!finalContent.includes('无法连接网络') && !finalContent.includes('请稍后重试')) {
-            success = true;
-            console.log('快手首页加载成功');
-          } else {
-            console.log('页面仍然显示网络错误，将重试...');
-            retryCount++;
-            await utils.sleep(10000, 15000); // 较长的等待时间，避免频繁请求
-          }
-        } catch (error) {
-          console.error(`访问快手首页出错 (尝试 ${retryCount + 1}/${maxRetries}):`, error);
-          retryCount++;
-          await utils.sleep(5000, 10000);
-        }
+      // 确保页面已经准备好
+      if (!this.contextPage || this.contextPage.isClosed()) {
+        console.log('页面已关闭，创建新页面...');
+        this.contextPage = await this.browserContext.newPage();
       }
       
-      if (!success) {
-        throw new Error(`访问快手首页失败，已重试${maxRetries}次`);
-      }
+      // 随机延迟，模拟真实用户行为
+      await utils.sleep(1000, 2000);
+      
+      // 访问首页
+      await this.contextPage.goto(this.indexUrl, { 
+        waitUntil: 'domcontentloaded',
+        timeout: 60000 
+      });
+      
+      // 随机滚动页面，模拟正常用户浏览行为
+      await this._randomScrollPage();
+      
+      // 模拟一些用户行为，移动鼠标等
+      await this._simulateUserBehavior();
+      
+      console.log('快手首页访问完成');
       
       return this.contextPage;
     } catch (error) {
-      console.error('访问快手首页失败:', error);
-      throw error;
+      console.log('访问快手首页过程中出现错误，但将继续执行:', error);
+      // 返回当前页面，即使出错也继续执行
+      return this.contextPage;
     }
   }
   
@@ -1086,6 +1038,364 @@ class KuaishouCrawler extends AbstractCrawler {
     
     await Promise.all(detailPromises);
     console.log('视频详情获取完成');
+  }
+
+  /**
+   * 通过快手号获取用户信息
+   * @param {string} kuaishouId 快手号
+   * @returns {Promise<object>} 用户信息
+   */
+  async getUserProfile(kuaishouId) {
+    console.log(`开始获取快手号为 ${kuaishouId} 的用户信息`);
+    
+    if (!this.ksClient) {
+      console.log('KuaiShou客户端未初始化，正在初始化...');
+      try {
+        await this.createKsClient();
+      } catch (error) {
+        console.log('初始化客户端失败，使用基本客户端:', error);
+        const KuaiShouClient = require('./client');
+        this.ksClient = new KuaiShouClient({}, this.userAgent);
+      }
+    }
+    
+    try {
+      // 尝试使用标准方法获取用户信息
+      console.log('尝试获取用户信息...');
+      const profileResult = await this.ksClient.getUserProfile(kuaishouId);
+      
+      if (profileResult && profileResult.data && profileResult.data.userProfile) {
+        const userProfile = profileResult.data.userProfile;
+        const user = userProfile.profile.user;
+        
+        // 构建用户信息对象
+        const userInfo = {
+          id: user.id,
+          eid: user.eid,
+          name: user.name,
+          gender: userProfile.profile.gender,
+          avatar: user.avatar,
+          fans_count: userProfile.ownerCount.fan,
+          follow_count: userProfile.ownerCount.follow,
+          photo_count: userProfile.ownerCount.photo,
+          liked_count: userProfile.ownerCount.liked,
+          is_following: user.isFollowing,
+          is_follower: user.isFollower,
+          living: user.living
+        };
+        
+        console.log(`成功获取用户 ${user.name}(${kuaishouId}) 的信息`);
+        
+        // 为用户创建保存目录
+        const savePath = path.resolve(process.cwd(), 'data', 'user_profiles');
+        await utils.ensureDir(savePath);
+        
+        // 保存用户信息到JSON文件
+        const userInfoPath = path.join(savePath, `${kuaishouId}.json`);
+        await utils.saveToJson(userInfoPath, userInfo);
+        console.log(`用户信息已保存到: ${userInfoPath}`);
+        
+        return userInfo;
+      } else {
+        console.log('标准方法获取用户信息失败，尝试使用测试方法...');
+        
+        // 尝试使用测试方法
+        const testResult = await this.ksClient.testGetUserProfile(kuaishouId);
+        
+        if (testResult) {
+          const userProfile = testResult;
+          
+          // 构建用户信息对象
+          const userInfo = {
+            id: userProfile.profile.user_id,
+            name: userProfile.profile.user_name,
+            gender: userProfile.profile.gender,
+            avatar: userProfile.profile.headurl,
+            description: userProfile.profile.user_text,
+            background: userProfile.profile.user_profile_bg_url,
+            fans_count: userProfile.ownerCount.fan,
+            follow_count: userProfile.ownerCount.follow,
+            photo_count: userProfile.ownerCount.photo,
+            photo_public_count: userProfile.ownerCount.photo_public,
+            is_following: userProfile.isFollowing
+          };
+          
+          console.log(`成功获取用户 ${userProfile.profile.user_name}(${kuaishouId}) 的信息（测试方法）`);
+          
+          // 为用户创建保存目录
+          const savePath = path.resolve(process.cwd(), 'data', 'user_profiles');
+          await utils.ensureDir(savePath);
+          
+          // 保存用户信息到JSON文件
+          const userInfoPath = path.join(savePath, `${kuaishouId}.json`);
+          await utils.saveToJson(userInfoPath, userInfo);
+          console.log(`用户信息已保存到: ${userInfoPath}`);
+          
+          return userInfo;
+        }
+      }
+      
+      console.log(`用户 ${kuaishouId} 不存在或获取失败`);
+      return null;
+    } catch (error) {
+      console.log(`获取用户 ${kuaishouId} 信息过程中出现错误，尝试使用测试方法:`, error);
+      
+      try {
+        // 尝试使用测试方法
+        const testResult = await this.ksClient.testGetUserProfile(kuaishouId);
+        
+        if (testResult) {
+          const userProfile = testResult;
+          
+          // 构建用户信息对象
+          const userInfo = {
+            id: userProfile.profile.user_id,
+            name: userProfile.profile.user_name,
+            gender: userProfile.profile.gender,
+            avatar: userProfile.profile.headurl,
+            description: userProfile.profile.user_text,
+            background: userProfile.profile.user_profile_bg_url,
+            fans_count: userProfile.ownerCount.fan,
+            follow_count: userProfile.ownerCount.follow,
+            photo_count: userProfile.ownerCount.photo,
+            photo_public_count: userProfile.ownerCount.photo_public,
+            is_following: userProfile.isFollowing
+          };
+          
+          console.log(`成功获取用户 ${userProfile.profile.user_name}(${kuaishouId}) 的信息（测试方法）`);
+          
+          // 为用户创建保存目录
+          const savePath = path.resolve(process.cwd(), 'data', 'user_profiles');
+          await utils.ensureDir(savePath);
+          
+          // 保存用户信息到JSON文件
+          const userInfoPath = path.join(savePath, `${kuaishouId}.json`);
+          await utils.saveToJson(userInfoPath, userInfo);
+          console.log(`用户信息已保存到: ${userInfoPath}`);
+          
+          return userInfo;
+        }
+      } catch (testError) {
+        console.log('测试方法也失败:', testError);
+      }
+      
+      console.log(`无法获取用户 ${kuaishouId} 的信息`);
+      return null;
+    }
+  }
+
+  /**
+   * 获取用户视频列表
+   * @param {string} userId 用户ID
+   * @param {number} maxCount 最大获取数量
+   * @returns {Promise<Array>} 视频列表
+   */
+  async getUserVideos(userId, maxCount = 20) {
+    console.log(`开始获取用户 ${userId} 的视频列表，最大数量: ${maxCount}`);
+    
+    if (!this.ksClient) {
+      console.log('KuaiShou客户端未初始化，正在初始化...');
+      try {
+        await this.createKsClient();
+      } catch (error) {
+        console.log('初始化客户端失败，使用基本客户端:', error);
+        const KuaiShouClient = require('./client');
+        this.ksClient = new KuaiShouClient({}, this.userAgent);
+      }
+    }
+    
+    try {
+      let pcursor = '';
+      let allVideos = [];
+      let hasMore = true;
+      let page = 1;
+      
+      // 循环获取所有视频
+      while (hasMore && allVideos.length < maxCount) {
+        console.log(`正在获取第 ${page} 页视频，当前已获取 ${allVideos.length} 个...`);
+        
+        // 获取一页视频
+        const result = await this.ksClient.getUserVideos(userId, pcursor);
+        
+        if (result && result.visionProfilePhotoList) {
+          const { pcursor: nextCursor, photoList } = result.visionProfilePhotoList;
+          
+          if (photoList && photoList.length > 0) {
+            // 处理视频数据
+            const videos = photoList.map(item => {
+              return {
+                id: item.id,
+                caption: item.caption,
+                cover_url: item.coverUrl,
+                play_url: item.photoUrl,
+                timestamp: item.timestamp,
+                like_count: item.likeCount,
+                comment_count: item.commentCount,
+                view_count: item.viewCount,
+                duration: item.duration
+              };
+            });
+            
+            // 添加到结果列表
+            allVideos = allVideos.concat(videos);
+            console.log(`第 ${page} 页获取成功，新增 ${videos.length} 个视频`);
+            
+            // 更新游标
+            pcursor = nextCursor;
+            
+            // 检查是否还有更多
+            hasMore = pcursor !== '' && pcursor !== 'no_more';
+            
+            // 增加页码
+            page++;
+            
+            // 随机延迟，避免请求过于频繁
+            await new Promise(resolve => setTimeout(resolve, Math.floor(Math.random() * 2000) + 1000));
+          } else {
+            console.log('当前页没有视频数据');
+            hasMore = false;
+          }
+        } else {
+          console.log('获取视频列表失败');
+          hasMore = false;
+        }
+      }
+      
+      // 截取指定数量
+      const result = allVideos.slice(0, maxCount);
+      
+      // 保存结果
+      if (result.length > 0) {
+        // 为用户创建保存目录
+        const savePath = path.resolve(process.cwd(), 'data', 'user_videos');
+        await utils.ensureDir(savePath);
+        
+        // 保存视频列表到JSON文件
+        const videosPath = path.join(savePath, `${userId}.json`);
+        await utils.saveToJson(videosPath, result);
+        console.log(`视频列表已保存到: ${videosPath}`);
+      }
+      
+      return result;
+    } catch (error) {
+      console.error(`获取用户视频列表失败: ${error.message}`);
+      return [];
+    }
+  }
+
+  /**
+   * 获取视频评论
+   * @param {string} videoId 视频ID
+   * @param {number} maxCount 最大获取数量
+   * @returns {Promise<Array>} 评论列表
+   */
+  async getVideoComments(videoId, maxCount = 20) {
+    console.log(`开始获取视频 ${videoId} 的评论，最大数量: ${maxCount}`);
+    
+    if (!this.ksClient) {
+      console.log('KuaiShou客户端未初始化，正在初始化...');
+      try {
+        await this.createKsClient();
+      } catch (error) {
+        console.log('初始化客户端失败，使用基本客户端:', error);
+        const KuaiShouClient = require('./client');
+        this.ksClient = new KuaiShouClient({}, this.userAgent);
+      }
+    }
+    
+    try {
+      let pcursor = '';
+      let allComments = [];
+      let hasMore = true;
+      let page = 1;
+      
+      // 循环获取所有评论
+      while (hasMore && allComments.length < maxCount) {
+        console.log(`正在获取第 ${page} 页评论，当前已获取 ${allComments.length} 条...`);
+        
+        // 获取一页评论
+        const result = await this.ksClient.getVideoComments(videoId, pcursor);
+        
+        if (result && result.commentCount !== undefined) {
+          const { commentCount, pcursor: nextCursor, rootComments } = result;
+          
+          if (rootComments && rootComments.length > 0) {
+            // 处理评论数据
+            const comments = rootComments.map(comment => {
+              // 提取子评论
+              const subComments = comment.subComments ? comment.subComments.map(subComment => {
+                return {
+                  id: subComment.commentId,
+                  content: subComment.content,
+                  author_id: subComment.authorId,
+                  author_name: subComment.authorName,
+                  avatar: subComment.headurl,
+                  timestamp: subComment.timestamp,
+                  like_count: subComment.likedCount,
+                  reply_to: subComment.replyTo,
+                  reply_to_user_name: subComment.replyToUserName
+                };
+              }) : [];
+              
+              // 返回主评论
+              return {
+                id: comment.commentId,
+                content: comment.content,
+                author_id: comment.authorId,
+                author_name: comment.authorName,
+                avatar: comment.headurl,
+                timestamp: comment.timestamp,
+                like_count: comment.likedCount,
+                sub_comment_count: comment.subCommentCount,
+                sub_comments: subComments
+              };
+            });
+            
+            // 添加到结果列表
+            allComments = allComments.concat(comments);
+            console.log(`第 ${page} 页获取成功，新增 ${comments.length} 条评论`);
+            
+            // 更新游标
+            pcursor = nextCursor;
+            
+            // 检查是否还有更多
+            hasMore = pcursor !== '' && pcursor !== 'no_more';
+            
+            // 增加页码
+            page++;
+            
+            // 随机延迟，避免请求过于频繁
+            await new Promise(resolve => setTimeout(resolve, Math.floor(Math.random() * 2000) + 1000));
+          } else {
+            console.log('当前页没有评论数据');
+            hasMore = false;
+          }
+        } else {
+          console.log('获取评论列表失败');
+          hasMore = false;
+        }
+      }
+      
+      // 截取指定数量
+      const result = allComments.slice(0, maxCount);
+      
+      // 保存结果
+      if (result.length > 0) {
+        // 创建保存目录
+        const savePath = path.resolve(process.cwd(), 'data', 'video_comments');
+        await utils.ensureDir(savePath);
+        
+        // 保存评论列表到JSON文件
+        const commentsPath = path.join(savePath, `${videoId}.json`);
+        await utils.saveToJson(commentsPath, result);
+        console.log(`评论列表已保存到: ${commentsPath}`);
+      }
+      
+      return result;
+    } catch (error) {
+      console.error(`获取视频评论失败: ${error.message}`);
+      return [];
+    }
   }
 
   /**

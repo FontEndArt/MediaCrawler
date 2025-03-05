@@ -55,6 +55,106 @@ async function prepareDataDir() {
   await utils.ensureDir(path.join(dataDir, 'search'));
   await utils.ensureDir(path.join(dataDir, 'detail'));
   await utils.ensureDir(path.join(dataDir, 'creator'));
+  await utils.ensureDir(path.join(dataDir, 'user_profiles')); // 添加用户资料目录
+  await utils.ensureDir(path.join(dataDir, 'user_videos')); // 添加用户视频目录
+  await utils.ensureDir(path.join(dataDir, 'video_comments')); // 添加视频评论目录
+}
+
+/**
+ * 获取快手用户资料
+ * @param {string} userId 快手用户ID
+ */
+async function getUserProfile(userId) {
+  try {
+    console.log(`开始获取快手用户资料: ${userId}`);
+    
+    // 创建快手爬虫实例
+    const crawler = new KuaishouCrawler();
+    
+    // 启动爬虫
+    await crawler.start();
+    
+    // 获取用户资料
+    const userProfile = await crawler.getUserProfile(userId);
+    
+    // 关闭爬虫
+    await crawler.close();
+    
+    if (userProfile) {
+      console.log('用户资料获取成功:');
+      console.log(JSON.stringify(userProfile, null, 2));
+    } else {
+      console.log(`无法获取用户 ${userId} 的资料`);
+    }
+  } catch (error) {
+    console.error('获取用户资料时出错:', error);
+  }
+}
+
+/**
+ * 获取用户视频列表
+ * @param {string} userId 用户ID
+ * @param {number} count 获取视频数量
+ */
+async function getUserVideos(userId, count) {
+  try {
+    console.log(`开始获取快手用户 ${userId} 的视频列表，数量: ${count}`);
+    
+    // 创建快手爬虫实例
+    const crawler = new KuaishouCrawler();
+    
+    // 启动爬虫
+    await crawler.start();
+    
+    // 获取用户视频列表
+    const videos = await crawler.getUserVideos(userId, count);
+    
+    // 关闭爬虫
+    await crawler.close();
+    
+    if (videos && videos.length > 0) {
+      console.log(`成功获取用户 ${userId} 的视频列表，共 ${videos.length} 个视频:`);
+      console.log(JSON.stringify(videos.slice(0, 3), null, 2)); // 只显示前3个视频的详情
+      console.log(`...共 ${videos.length} 个视频`);
+    } else {
+      console.log(`无法获取用户 ${userId} 的视频列表或列表为空`);
+    }
+  } catch (error) {
+    console.error('获取用户视频列表时出错:', error);
+  }
+}
+
+/**
+ * 获取视频评论
+ * @param {string} videoId 视频ID
+ * @param {number} count 获取评论数量
+ */
+async function getVideoComments(videoId, count) {
+  try {
+    console.log(`开始获取视频 ${videoId} 的评论，数量: ${count}`);
+    
+    // 创建快手爬虫实例
+    const crawler = new KuaishouCrawler();
+    
+    // 启动爬虫
+    await crawler.start();
+    
+    // 获取视频评论
+    const comments = await crawler.getVideoComments(videoId, count);
+    
+    // 关闭爬虫
+    await crawler.close();
+    
+    if (comments && comments.length > 0) {
+      console.log(`成功获取视频 ${videoId} 的评论，共 ${comments.length} 条:`);
+      console.log(JSON.stringify(comments.slice(0, 5), null, 2)); // 只显示前5条评论的详情
+      console.log(`...共 ${comments.length} 条评论`);
+    } else {
+      console.log(`无法获取视频 ${videoId} 的评论或评论为空`);
+    }
+  } catch (error) {
+    console.error('获取视频评论时出错:', error);
+  }
 }
 
 async function main() {
@@ -67,9 +167,49 @@ async function main() {
     // 准备数据目录
     await prepareDataDir();
     
-    // 创建快手爬虫实例并开始爬取
-    const crawler = new KuaishouCrawler();
-    await crawler.start();
+    // 解析命令行参数
+    const args = process.argv.slice(2);
+    const command = args[0];
+    
+    if (command === 'get-user-profile') {
+      // 获取用户资料模式
+      const userId = args[1];
+      if (!userId) {
+        console.error('错误: 请提供用户ID');
+        console.log('用法: node index.js get-user-profile <用户ID>');
+        process.exit(1);
+      }
+      
+      await getUserProfile(userId);
+    } else if (command === 'get-user-videos') {
+      // 获取用户视频列表模式
+      const userId = args[1];
+      const count = args[2] ? parseInt(args[2]) : 20; // 默认获取20个视频
+      
+      if (!userId) {
+        console.error('错误: 请提供用户ID');
+        console.log('用法: node index.js get-user-videos <用户ID> [视频数量]');
+        process.exit(1);
+      }
+      
+      await getUserVideos(userId, count);
+    } else if (command === 'get-video-comments') {
+      // 获取视频评论模式
+      const videoId = args[1];
+      const count = args[2] ? parseInt(args[2]) : 20; // 默认获取20条评论
+      
+      if (!videoId) {
+        console.error('错误: 请提供视频ID');
+        console.log('用法: node index.js get-video-comments <视频ID> [评论数量]');
+        process.exit(1);
+      }
+      
+      await getVideoComments(videoId, count);
+    } else {
+      // 默认模式 - 创建快手爬虫实例并开始常规爬取
+      const crawler = new KuaishouCrawler();
+      await crawler.start();
+    }
     
   } catch (error) {
     console.error('程序运行出错:', error);

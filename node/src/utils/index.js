@@ -162,11 +162,26 @@ async function cleanupOldFiles(directory, maxAgeDays = 1) {
   }
 }
 
+/**
+ * 检查文件是否存在
+ * @param {string} filePath 文件路径
+ * @returns {Promise<boolean>} 文件是否存在
+ */
+async function fileExists(filePath) {
+  try {
+    await fs.access(filePath, fsSync.constants.F_OK);
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
 module.exports = {
   getUserAgent,
   sleep,
   ensureDir,
   saveToJson,
   loadConfig,
-  cleanupOldFiles
+  cleanupOldFiles,
+  fileExists
 }; 

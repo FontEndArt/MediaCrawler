@@ -103,10 +103,26 @@ class KuaishouLogin {
       const base64Data = base64QrcodeImg.replace(/^data:image\/\w+;base64,/, '');
       await fs.writeFile(qrcodePath, base64Data, 'base64');
       
-      // 而不是使用open模块打开，直接显示路径让用户手动打开
+      // 不仅显示文件路径，还在控制台中直接展示二维码
       console.log('\n========================================');
       console.log('请打开以下路径扫描二维码登录：');
       console.log(qrcodePath);
+      
+      // 在控制台中渲染二维码
+      try {
+        // 基于二维码URL生成终端展示的二维码
+        qrcode.toString(base64QrcodeImg, {type: 'terminal'}, (err, qrcodeText) => {
+          if (err) {
+            console.log('二维码控制台展示失败，请使用文件方式查看');
+          } else {
+            console.log('\n二维码如下（如变形请使用文件方式）：');
+            console.log(qrcodeText);
+          }
+        });
+      } catch (e) {
+        console.log('二维码控制台渲染失败:', e.message);
+      }
+      
       console.log('========================================\n');
       
       // 检查登录状态，最多等待60秒

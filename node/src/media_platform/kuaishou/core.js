@@ -7,16 +7,24 @@
  */
 
 const path = require('path');
-const fs = require('fs');
+const fs = require('fs').promises;
 const pLimit = require('p-limit');
 const { chromium } = require('playwright');
 const moment = require('moment');
+const axios = require('axios');
+const fsSync = require('fs');
 
 const AbstractCrawler = require('../abstract_crawler');
 const KuaiShouClient = require('./client');
 const KuaishouLogin = require('./login'); // 导入登录模块
 const utils = require('../../utils');
 const { formatProxyInfo } = require('../../utils/proxy');
+
+// 用于在控制台显示二维码
+const qrcodeTerminal = require('qrcode-terminal');
+// 用于从图片中识别二维码
+const { Jimp } = require("jimp");
+const jsQR = require('jsqr');
 
 class KuaishouCrawler extends AbstractCrawler {
   constructor(config = {}) {
@@ -63,7 +71,8 @@ class KuaishouCrawler extends AbstractCrawler {
       headless: false,
       max_pages: 3,
       search_keywords: ['搞笑', '宠物'],
-      proxy: null
+      proxy: null,
+      login_required: false
     };
     
     // 合并配置
@@ -84,6 +93,25 @@ class KuaishouCrawler extends AbstractCrawler {
       
       // 访问快手首页
       await this.visitHomePage();
+      
+      // 等待更长时间确保页面完全加载
+      console.log('等待页面完全加载...');
+      await utils.sleep(3000, 5000);
+      
+      // 检查登录状态
+      const isLoggedIn = await this.checkLoginState();
+      console.log(`登录状态检查结果: ${isLoggedIn ? '已登录' : '未登录'}`);
+      
+      // 如果未登录并且配置了需要登录
+      if (!isLoggedIn && this.config.login_required) {
+        console.log('需要登录但当前未登录，将尝试登录');
+        const loginSuccess = await this.loginByQrcode();
+        if (loginSuccess) {
+          console.log('登录成功，继续执行后续操作');
+        } else {
+          console.log('登录失败，将以未登录状态继续执行，部分功能可能受限');
+        }
+      }
       
       // 创建快手客户端
       this.ksClient = await this.createKsClient();
@@ -121,8 +149,8 @@ class KuaishouCrawler extends AbstractCrawler {
     try {
       console.log('检查登录状态...');
       
-      // 检查页面上是否有登录按钮
-      const loginButtonSelector = '.login-guide-mask';
+      // 检查页面上是否有登录按钮 - 使用简单的文本内容选择器
+      const loginButtonSelector = 'p:has-text("登录")';
       const hasLoginButton = await this.contextPage.$(loginButtonSelector).then(Boolean);
       
       if (!hasLoginButton) {
@@ -140,12 +168,37 @@ class KuaishouCrawler extends AbstractCrawler {
         // 如果没有明确的登录状态指示器，尝试检查cookies
         const cookies = await this.browserContext.cookies();
         const hasLoginCookies = cookies.some(cookie => 
-          (cookie.name === 'userId' || cookie.name === 'kuaishou.web.cp.api_st') && cookie.value
+          (cookie.name === 'userId' || cookie.name === 'passToken' || cookie.name === 'kuaishou.web.cp.api_st') && cookie.value
         );
         
         if (hasLoginCookies) {
           console.log('发现登录cookies，确认已登录');
           return true;
+        }
+        
+        // 尝试检查是否能访问个人相关页面
+        try {
+          console.log('尝试访问一个需要登录的子页面验证登录状态...');
+          // 保存当前URL以便稍后返回
+          const currentUrl = this.contextPage.url();
+          
+          // 访问一个通常需要登录的页面
+          await this.contextPage.goto('https://www.kuaishou.com/settings/profile', { waitUntil: 'domcontentloaded' });
+          await this.contextPage.waitForTimeout(2000);
+          
+          // 检查是否重定向到登录页面
+          const afterUrl = this.contextPage.url();
+          if (afterUrl.includes('settings/profile')) {
+            console.log('能够访问个人设置页面，确认已登录');
+            // 返回原页面
+            await this.contextPage.goto(currentUrl, { waitUntil: 'domcontentloaded' });
+            return true;
+          }
+          
+          // 返回原页面
+          await this.contextPage.goto(currentUrl, { waitUntil: 'domcontentloaded' });
+        } catch (e) {
+          console.log('尝试访问个人页面验证登录状态失败:', e.message);
         }
         
         console.log('未找到明确的登录状态指示，将尝试登录');
@@ -173,13 +226,133 @@ class KuaishouCrawler extends AbstractCrawler {
       // 设置二维码保存路径
       const qrcodePath = path.join(this.tempDir, 'kuaishou_qrcode.png');
       
-      // 此处添加获取二维码和扫码登录的代码
-      // ...
+      // 检查是否已经在登录页面
+      if (!this.contextPage.url().includes('kuaishou.com')) {
+        await this.contextPage.goto('https://www.kuaishou.com', { waitUntil: 'domcontentloaded' });
+      }
       
-      return true;
+      // 查找登录按钮并点击 - 使用简单的文本内容选择器
+      const loginButtonSelector = 'p:has-text("登录")';
+      const loginButton = await this.contextPage.$(loginButtonSelector);
+      if (loginButton) {
+        console.log('找到登录按钮，点击...');
+        await loginButton.click();
+        await this.contextPage.waitForTimeout(2000);
+      } else {
+        // 尝试直接打开登录页面
+        console.log('未找到登录按钮，尝试直接访问登录页面...');
+        await this.contextPage.goto('https://www.kuaishou.com/login', { waitUntil: 'domcontentloaded' });
+      }
+      
+      // 等待二维码出现
+      const qrcodeSelector = '.qrcode-img img';
+      try {
+        console.log('等待二维码出现...');
+        await this.contextPage.waitForSelector(qrcodeSelector, { timeout: 30000 });
+        
+        // 截图并保存二维码图片
+        const qrcodeElement = await this.contextPage.$(qrcodeSelector);
+        if (qrcodeElement) {
+          await qrcodeElement.screenshot({ path: qrcodePath });
+          console.log(`二维码已保存到: ${qrcodePath}`);
+          
+          // 从图片中识别二维码内容
+          const qrcodeContent = await this.readQRCodeFromImage(qrcodePath);
+          
+          if (qrcodeContent) {
+            console.log('\n请使用快手App扫描以下二维码登录：');
+            // 使用识别出的内容生成终端二维码
+            qrcodeTerminal.generate(qrcodeContent, { small: true });
+            console.log(`\n二维码内容：${qrcodeContent}`);
+          } else {
+            console.log(`无法从图片识别二维码内容，请直接打开保存的图片: ${qrcodePath}`);
+          }
+          
+          console.log('请在60秒内完成扫码登录\n');
+          
+          // 检查登录状态
+          let loginSuccess = false;
+          const maxAttempts = 60; // 最多尝试60次，每次等待1秒，总共60秒
+          for (let i = 0; i < maxAttempts; i++) {
+            // 检查cookies中是否包含登录凭证
+            const cookies = await this.browserContext.cookies();
+            const hasLoginCookies = cookies.some(cookie => 
+              (cookie.name === 'userId' || cookie.name === 'passToken' || cookie.name === 'kuaishou.web.cp.api_st') && cookie.value
+            );
+            
+            if (hasLoginCookies) {
+              loginSuccess = true;
+              console.log('登录成功，检测到登录cookies');
+              break;
+            }
+            
+            console.log(`等待登录中... (${i+1}/${maxAttempts})`);
+            await this.contextPage.waitForTimeout(1000);
+          }
+          
+          if (!loginSuccess) {
+            console.log('登录超时或取消，请稍后重试');
+            return false;
+          }
+          
+          // 登录成功后，等待重定向
+          console.log('登录成功，等待页面跳转...');
+          await this.contextPage.waitForTimeout(5000);
+          
+          return true;
+        } else {
+          console.log('找到二维码元素，但无法截取图片');
+          return false;
+        }
+      } catch (error) {
+        console.error('等待二维码出现超时:', error.message);
+        
+        // 尝试查看页面内容，帮助调试
+        console.log('当前页面URL:', this.contextPage.url());
+        const pageContent = await this.contextPage.content();
+        console.log('页面内容片段:', pageContent.substring(0, 500) + '...');
+        
+        return false;
+      }
     } catch (error) {
-      console.error('二维码登录失败:', error);
+      console.error('二维码登录过程出错:', error);
       return false;
+    }
+  }
+  
+  /**
+   * 从图片中识别二维码内容
+   * @param {string} imagePath - 图片路径
+   * @returns {Promise<string|null>} 识别到的二维码内容
+   */
+  async readQRCodeFromImage(imagePath) {
+    try {
+      console.log(`尝试从图片识别二维码: ${imagePath}`);
+      
+      // 读取图片
+      const image = await Jimp.read(imagePath);
+      const { width, height } = image.bitmap;
+      
+      // 获取图片数据
+      const imageData = {
+        data: new Uint8ClampedArray(image.bitmap.data),
+        width,
+        height
+      };
+      
+      // 识别二维码
+      const qrCode = jsQR(imageData.data, width, height);
+      
+      if (qrCode) {
+        console.log('成功识别二维码内容');
+        return qrCode.data;
+      } else {
+        console.log('未能识别出二维码内容');
+        return null;
+      }
+    } catch (error) {
+      console.error('二维码识别出错:', error);
+      return null;
     }
   }
 
@@ -595,17 +768,16 @@ class KuaishouCrawler extends AbstractCrawler {
               liked_count: sub.likedCount
             })) : [];
             
-            // 返回主评论和子评论
+            // 返回主评论
             return {
               comment_id: comment.commentId,
+              content: comment.content,
               author_id: comment.authorId,
               author_name: comment.authorName,
-              author_avatar: comment.authorAvatar,
-              content: comment.content,
+              avatar: comment.headurl,
               timestamp: comment.timestamp,
-              create_time: moment(comment.timestamp).format('YYYY-MM-DD HH:mm:ss'),
-              liked_count: comment.likedCount,
-              reply_count: comment.replyCount,
+              like_count: comment.likedCount,
+              sub_comment_count: comment.subCommentCount,
               sub_comments: subComments
             };
           });
@@ -691,15 +863,34 @@ class KuaishouCrawler extends AbstractCrawler {
       // 导入必要模块
       const { chromium } = require('playwright');
       const path = require('path');
-      const fs = require('fs');
+      const fs = require('fs').promises;
+      
+      console.log('正在启动浏览器...');
+      
+      // 浏览器数据目录
+      const browserDataDir = path.resolve(this.dataRootDir, '..', 'browser_data');
+      await utils.ensureDir(browserDataDir);
+      
+      // 尝试加载保存的cookies
+      const cookiesPath = path.join(this.dataRootDir, 'cookies.json');
+      let savedCookies = [];
+      try {
+        if (await utils.fileExists(cookiesPath)) {
+          const cookiesData = await fs.readFile(cookiesPath, 'utf8');
+          savedCookies = JSON.parse(cookiesData);
+          console.log('找到保存的cookies，将尝试恢复登录状态');
+        }
+      } catch (e) {
+        console.log('加载cookies失败:', e.message);
+        savedCookies = [];
+      }
       
       // 用户数据目录
-      const userDataDir = path.join(this.browserDataDir, 'kuaishou_user_data_dir');
+      const timestamp = Date.now();
+      const userDataDir = path.join(this.browserDataDir, `kuaishou_user_data_dir_${timestamp}`);
       
       // 确保目录存在
-      if (!fs.existsSync(userDataDir)) {
-        fs.mkdirSync(userDataDir, { recursive: true });
-      }
+      await utils.ensureDir(userDataDir);
       
       // 随机生成一个真实的用户代理
       this.userAgent = utils.getUserAgent();
@@ -707,7 +898,7 @@ class KuaishouCrawler extends AbstractCrawler {
       
       // 浏览器上下文选项
       const contextOptions = {
-        headless: this.config.headless === undefined ? false : this.config.headless,
+        headless: false, // 强制使用非无头模式
         userAgent: this.userAgent,
         viewport: {
           width: 1280 + Math.floor(Math.random() * 100),
@@ -760,6 +951,18 @@ class KuaishouCrawler extends AbstractCrawler {
       this.contextPage = await context.newPage();
       
       console.log('浏览器启动成功');
+      
+      // 如果有保存的cookies，尝试恢复登录状态
+      if (savedCookies && savedCookies.length > 0) {
+        try {
+          console.log(`正在加载${savedCookies.length}个保存的cookies，尝试恢复登录状态...`);
+          await context.addCookies(savedCookies);
+          console.log('cookies加载完成');
+        } catch (e) {
+          console.error('加载cookies失败:', e.message);
+        }
+      }
+      
       return context;
     } catch (error) {
       console.error('浏览器启动失败:', error);
@@ -789,6 +992,9 @@ class KuaishouCrawler extends AbstractCrawler {
         timeout: 60000 
       });
       
+      // 检查是否出现安全验证或滑块验证
+      await this.checkSecurityVerification();
+
       // 随机滚动页面，模拟正常用户浏览行为
       await this._randomScrollPage();
       
@@ -802,6 +1008,72 @@ class KuaishouCrawler extends AbstractCrawler {
       console.log('访问快手首页过程中出现错误，但将继续执行:', error);
       // 返回当前页面，即使出错也继续执行
       return this.contextPage;
+    }
+  }
+  
+  /**
+   * 检查页面是否出现安全验证
+   */
+  async checkSecurityVerification() {
+    try {
+      console.log('检查是否出现安全验证...');
+      
+      // 等待页面完全加载
+      await utils.sleep(2000);
+      
+      // 检查是否有安全验证标题
+      const securityTitle = await this.contextPage.locator('text=请完成安全验证').count();
+      if (securityTitle > 0) {
+        console.log('检测到安全验证，需要手动处理！');
+        
+        // 检查是否是滑块验证
+        const slider = await this.contextPage.locator('.slider-move-bar, .drag-button').count();
+        if (slider > 0) {
+          console.log('检测到滑块验证，请在浏览器中手动完成验证');
+        } else {
+          // 检查是否是拼图验证
+          const puzzle = await this.contextPage.locator('.puzzle-container').count();
+          if (puzzle > 0) {
+            console.log('检测到拼图验证，请在浏览器中手动完成验证');
+          } else {
+            console.log('检测到未知类型的安全验证，请在浏览器中手动处理');
+          }
+        }
+        
+        // 保存验证页面截图以便查看
+        const tempDir = path.join(process.cwd(), 'temp');
+        await utils.ensureDir(tempDir);
+        const screenshotPath = path.join(tempDir, `security_verification_${Date.now()}.png`);
+        await this.contextPage.screenshot({ path: screenshotPath });
+        console.log(`安全验证页面截图已保存到: ${screenshotPath}`);
+        
+        // 等待用户手动完成验证 (60秒超时)
+        console.log('等待用户手动完成验证...');
+        const maxWaitTime = 60; // 秒
+        let waited = 0;
+        
+        while (waited < maxWaitTime) {
+          // 检查验证是否已完成
+          const stillHasVerification = await this.contextPage.locator('text=请完成安全验证').count() > 0;
+          if (!stillHasVerification) {
+            console.log('验证已完成，继续进行操作');
+            break;
+          }
+          
+          // 等待5秒再检查
+          await utils.sleep(5000);
+          waited += 5;
+          console.log(`已等待 ${waited} 秒，继续等待用户完成验证...`);
+        }
+        
+        if (waited >= maxWaitTime) {
+          console.log('验证等待超时，可能需要重新启动爬虫');
+        }
+      } else {
+        console.log('未检测到安全验证，继续进行操作');
+      }
+    } catch (error) {
+      console.error('检查安全验证时出错:', error);
     }
   }
   
@@ -893,9 +1165,9 @@ class KuaishouCrawler extends AbstractCrawler {
           name: user.name,
           gender: userProfile.profile.gender,
           avatar: user.avatar,
-          fans_count: userProfile.ownerCount.fan,
-          follow_count: userProfile.ownerCount.follow,
-          photo_count: userProfile.ownerCount.photo
+          fans_count: userProfile.ownerCount?.fan || 0,
+          follow_count: userProfile.ownerCount?.follow || 0,
+          photo_count: userProfile.ownerCount?.photo || 0
         };
         
         // 为创作者创建目录
@@ -1010,6 +1282,502 @@ class KuaishouCrawler extends AbstractCrawler {
   }
 
   /**
+   * 通过快手号获取快手id
+   * @param {string} username 快手号
+   * @returns {Promise<string|null>} 成功返回快手id，失败返回null
+   */
+  async getKuaishouIdByUsername(username) {
+    try {
+      console.log(`正在获取快手号 ${username} 对应的快手ID...`);
+      
+      // 如果已经有browserContext，则使用现有的，否则才创建新的
+      if (!this.browserContext || !this.browser) {
+        console.log('浏览器尚未启动，自动启动爬虫...');
+        // 检查是否已经有爬虫实例在运行
+        if (global.runningCrawler) {
+          console.log('检测到全局爬虫实例，使用现有实例');
+          this.browser = global.runningCrawler.browser;
+          this.browserContext = global.runningCrawler.browserContext;
+          this.contextPage = global.runningCrawler.contextPage;
+          this.ksClient = global.runningCrawler.ksClient;
+        } else {
+          await this.start();
+          // 将当前爬虫实例保存到全局变量
+          global.runningCrawler = this;
+          console.log('爬虫启动完成，继续获取快手ID');
+        }
+      } else {
+        console.log('使用现有浏览器实例');
+      }
+      
+      if (!this.contextPage || this.contextPage.isClosed()) {
+        console.log('创建新页面...');
+        this.contextPage = await this.browserContext.newPage();
+      }
+      
+      // 访问作者搜索页面
+      const searchUrl = `https://www.kuaishou.com/search/author?searchKey=${encodeURIComponent(username)}`;
+      console.log(`访问作者搜索页面: ${searchUrl}`);
+      await this.contextPage.goto(searchUrl, { waitUntil: 'domcontentloaded' });
+      
+      // 等待页面加载
+      await this.contextPage.waitForLoadState('domcontentloaded');
+      await this.contextPage.waitForTimeout(2000);  // 多等待一会，确保内容加载完成
+      
+      // 截图保存，用于调试
+      const beforeScreenshotPath = path.join(this.tempDir, `search_${username}_${Date.now()}.png`);
+      await utils.ensureDir(this.tempDir);
+      await this.contextPage.screenshot({ path: beforeScreenshotPath });
+      console.log(`搜索页面截图已保存至: ${beforeScreenshotPath}`);
+      
+      // 获取首个用户卡片的位置信息
+      console.log(`获取首个用户卡片位置信息...`);
+      const cardBounds = await this.contextPage.evaluate(() => {
+        const cards = document.querySelectorAll('.container.card-item');
+        if (!cards || cards.length === 0) return null;
+        
+        const firstCard = cards[0];
+        const rect = firstCard.getBoundingClientRect();
+        
+        // 获取用户名, 可能用于调试
+        const nameElement = firstCard.querySelector('.detail-user-name .title');
+        const name = nameElement ? nameElement.textContent.trim() : 'unknown';
+        
+        return {
+          x: rect.x,
+          y: rect.y,
+          width: rect.width,
+          height: rect.height,
+          userName: name,
+          cardCount: cards.length
+        };
+      });
+      
+      if (!cardBounds) {
+        console.log(`未找到任何用户卡片`);
+        return null;
+      }
+      
+      console.log(`找到用户卡片: ${JSON.stringify(cardBounds)}`);
+      
+      // 在卡片区域内随机位置点击，同时监听新页面打开事件
+      const x = cardBounds.x + (cardBounds.width * 0.5) + (Math.random() * 20 - 10);
+      const y = cardBounds.y + (cardBounds.height * 0.3) + (Math.random() * 20 - 10);
+      
+      console.log(`准备在位置 (${x}, ${y}) 进行点击...`);
+      
+      // 监听新页面打开事件
+      console.log(`设置新页面打开监听...`);
+      const pagePromise = this.browserContext.waitForEvent('page', { timeout: 15000 }).catch(e => {
+        console.log(`新页面监听超时: ${e.message}`);
+        return null;
+      });
+      
+      // 点击区域
+      console.log(`点击位置 (${x}, ${y})...`);
+      await this.contextPage.mouse.click(x, y);
+      
+      // 等待新页面
+      console.log(`等待新页面打开...`);
+      const newPage = await pagePromise;
+      
+      if (newPage) {
+        console.log(`新页面已打开，等待加载完成...`);
+        
+        // 等待新页面加载
+        await newPage.waitForLoadState('networkidle').catch(e => {
+          console.log(`新页面加载超时: ${e.message}`);
+        });
+        
+        // 获取新页面URL
+        const newUrl = newPage.url();
+        console.log(`新页面URL: ${newUrl}`);
+        
+        // 截图保存
+        const newPageScreenshotPath = path.join(this.tempDir, `profile_${username}_${Date.now()}.png`);
+        await newPage.screenshot({ path: newPageScreenshotPath }).catch(e => {
+          console.log(`新页面截图失败: ${e.message}`);
+        });
+        console.log(`新页面截图已保存至: ${newPageScreenshotPath}`);
+        
+        // 从URL中提取用户ID
+        const profileMatch = newUrl.match(/\/profile\/([^?/]+)/);
+        if (profileMatch && profileMatch[1]) {
+          const userIdFromUrl = profileMatch[1];
+          console.log(`从URL中提取到用户ID: ${userIdFromUrl}`);
+          
+          // 关闭新页面
+          await newPage.close().catch(e => {
+            console.log(`关闭新页面失败: ${e.message}`);
+          });
+          
+          return userIdFromUrl;
+        }
+        
+        // 如果URL不包含用户ID，尝试从页面内容中提取
+        console.log(`URL中未找到用户ID，尝试从页面内容中提取...`);
+        const userId = await newPage.evaluate(() => {
+          const html = document.documentElement.outerHTML;
+          
+          // 尝试从各种模式中提取ID
+          const patterns = [
+            /\/profile\/([a-zA-Z0-9_\-]+)/,
+            /"userId":"([a-zA-Z0-9_\-]+)"/,
+            /"authorId":"([a-zA-Z0-9_\-]+)"/,
+            /"id":"([a-zA-Z0-9_\-]+)"/
+          ];
+          
+          for (const pattern of patterns) {
+            const match = html.match(pattern);
+            if (match && match[1]) {
+              return match[1];
+            }
+          }
+          
+          return null;
+        }).catch(e => {
+          console.log(`从新页面提取内容失败: ${e.message}`);
+          return null;
+        });
+        
+        // 关闭新页面
+        await newPage.close().catch(e => {
+          console.log(`关闭新页面失败: ${e.message}`);
+        });
+        
+        if (userId) {
+          console.log(`从新页面内容中提取到用户ID: ${userId}`);
+          return userId;
+        }
+      }
+      
+      // 如果点击第一个位置未成功，尝试点击头像区域
+      console.log(`尝试点击用户头像区域...`);
+      const avatarBounds = await this.contextPage.evaluate(() => {
+        const cards = document.querySelectorAll('.container.card-item');
+        if (!cards || cards.length === 0) return null;
+        
+        const firstCard = cards[0];
+        const avatar = firstCard.querySelector('.avatar-img');
+        if (!avatar) return null;
+        
+        const rect = avatar.getBoundingClientRect();
+        return {
+          x: rect.x,
+          y: rect.y,
+          width: rect.width,
+          height: rect.height
+        };
+      });
+      
+      if (avatarBounds) {
+        console.log(`找到头像元素: ${JSON.stringify(avatarBounds)}`);
+        
+        const avatarX = avatarBounds.x + (avatarBounds.width / 2);
+        const avatarY = avatarBounds.y + (avatarBounds.height / 2);
+        
+        // 监听新页面打开事件
+        console.log(`设置头像点击的新页面监听...`);
+        const avatarPagePromise = this.browserContext.waitForEvent('page', { timeout: 15000 }).catch(e => {
+          console.log(`头像点击新页面监听超时: ${e.message}`);
+          return null;
+        });
+        
+        console.log(`点击头像位置 (${avatarX}, ${avatarY})...`);
+        await this.contextPage.mouse.click(avatarX, avatarY);
+        
+        // 等待新页面
+        console.log(`等待头像点击后的新页面打开...`);
+        const avatarNewPage = await avatarPagePromise;
+        
+        if (avatarNewPage) {
+          console.log(`头像点击后新页面已打开，等待加载完成...`);
+          
+          // 等待新页面加载
+          await avatarNewPage.waitForLoadState('networkidle').catch(e => {
+            console.log(`头像新页面加载超时: ${e.message}`);
+          });
+          
+          // 获取新页面URL
+          const avatarUrl = avatarNewPage.url();
+          console.log(`头像点击后新页面URL: ${avatarUrl}`);
+          
+          // 截图保存
+          const avatarScreenshotPath = path.join(this.tempDir, `avatar_profile_${username}_${Date.now()}.png`);
+          await avatarNewPage.screenshot({ path: avatarScreenshotPath }).catch(e => {
+            console.log(`头像新页面截图失败: ${e.message}`);
+          });
+          console.log(`头像点击新页面截图已保存至: ${avatarScreenshotPath}`);
+          
+          // 从URL中提取用户ID
+          const profileMatch = avatarUrl.match(/\/profile\/([^?/]+)/);
+          if (profileMatch && profileMatch[1]) {
+            const avatarUserId = profileMatch[1];
+            console.log(`从头像点击URL中提取到用户ID: ${avatarUserId}`);
+            
+            // 关闭新页面
+            await avatarNewPage.close().catch(e => {
+              console.log(`关闭头像新页面失败: ${e.message}`);
+            });
+            
+            return avatarUserId;
+          }
+          
+          // 关闭新页面
+          await avatarNewPage.close().catch(e => {
+            console.log(`关闭头像新页面失败: ${e.message}`);
+          });
+        }
+      }
+      
+      // 如果以上方法都未成功，尝试点击名称区域
+      console.log(`尝试点击用户名称区域...`);
+      const nameBounds = await this.contextPage.evaluate(() => {
+        const nameEl = document.querySelector('.detail-user-name');
+        if (!nameEl) return null;
+        
+        const rect = nameEl.getBoundingClientRect();
+        return {
+          x: rect.x,
+          y: rect.y,
+          width: rect.width,
+          height: rect.height
+        };
+      });
+      
+      if (nameBounds) {
+        console.log(`找到名称元素: ${JSON.stringify(nameBounds)}`);
+        
+        const nameX = nameBounds.x + (nameBounds.width / 2);
+        const nameY = nameBounds.y + (nameBounds.height / 2);
+        
+        // 监听新页面打开事件
+        console.log(`设置名称点击的新页面监听...`);
+        const namePagePromise = this.browserContext.waitForEvent('page', { timeout: 15000 }).catch(e => {
+          console.log(`名称点击新页面监听超时: ${e.message}`);
+          return null;
+        });
+        
+        console.log(`点击名称位置 (${nameX}, ${nameY})...`);
+        await this.contextPage.mouse.click(nameX, nameY);
+        
+        // 等待新页面
+        console.log(`等待名称点击后的新页面打开...`);
+        const nameNewPage = await namePagePromise;
+        
+        if (nameNewPage) {
+          console.log(`名称点击后新页面已打开，等待加载完成...`);
+          
+          // 等待新页面加载
+          await nameNewPage.waitForLoadState('networkidle').catch(e => {
+            console.log(`名称新页面加载超时: ${e.message}`);
+          });
+          
+          // 获取新页面URL
+          const nameUrl = nameNewPage.url();
+          console.log(`名称点击后新页面URL: ${nameUrl}`);
+          
+          // 从URL中提取用户ID
+          const profileMatch = nameUrl.match(/\/profile\/([^?/]+)/);
+          if (profileMatch && profileMatch[1]) {
+            const nameUserId = profileMatch[1];
+            console.log(`从名称点击URL中提取到用户ID: ${nameUserId}`);
+            
+            // 关闭新页面
+            await nameNewPage.close().catch(e => {
+              console.log(`关闭名称新页面失败: ${e.message}`);
+            });
+            
+            return nameUserId;
+          }
+          
+          // 关闭新页面
+          await nameNewPage.close().catch(e => {
+            console.log(`关闭名称新页面失败: ${e.message}`);
+          });
+        }
+      }
+      
+      // 最后尝试从原页面内容中提取用户ID
+      console.log(`尝试从原页面内容中提取用户ID...`);
+      const originalUserId = await this.contextPage.evaluate(() => {
+        const html = document.documentElement.outerHTML;
+        
+        // 尝试从各种模式中提取ID
+        const patterns = [
+          /\/profile\/([a-zA-Z0-9_\-]+)/,
+          /"userId":"([a-zA-Z0-9_\-]+)"/,
+          /"authorId":"([a-zA-Z0-9_\-]+)"/,
+          /"id":"([a-zA-Z0-9_\-]+)"/
+        ];
+        
+        for (const pattern of patterns) {
+          const match = html.match(pattern);
+          if (match && match[1]) {
+            return match[1];
+          }
+        }
+        
+        return null;
+      });
+      
+      if (originalUserId) {
+        console.log(`从原页面内容中提取到用户ID: ${originalUserId}`);
+        return originalUserId;
+      }
+      
+      console.log(`无法获取快手号 ${username} 对应的快手ID`);
+      return null;
+    } catch (error) {
+      console.error(`获取快手号 ${username} 的快手ID时出错:`, error);
+      return null;
+    }
+  }
+
+  /**
+   * 检查给定的字符串是否为有效的快手ID
+   * @param {string} id 可能的快手ID
+   * @returns {Promise<boolean>} 是否为有效的快手ID
+   */
+  async isValidKuaishouId(id) {
+    console.log(`正在验证 ${id} 是否为有效的快手ID...`);
+    
+    // 如果输入为空，直接返回false
+    if (!id) {
+      console.log('输入ID为空，无效');
+      return false;
+    }
+    
+    // 从URL中提取ID
+    if (id.includes('kuaishou.com/profile/')) {
+      const match = id.match(/kuaishou\.com\/profile\/([^?/]+)/);
+      if (match && match[1]) {
+        id = match[1];
+        console.log(`从URL中提取ID: ${id}`);
+      }
+    }
+    
+    try {
+      // 尝试通过API方式验证（如果已有客户端）
+      if (this.ksClient) {
+        try {
+          console.log(`尝试通过API验证ID: ${id}...`);
+          
+          // 首先尝试标准方法
+          const profileResult = await this.ksClient.getUserProfile(id);
+          
+          if (profileResult && profileResult.data && profileResult.data.userProfile) {
+            console.log(`通过API验证成功，${id} 是有效的快手ID`);
+            return true;
+          }
+          
+          // 如果标准方法失败，尝试测试方法
+          console.log(`标准API验证失败，尝试通过测试API验证...`);
+          const testResult = await this.ksClient.testGetUserProfile(id);
+          
+          if (testResult && testResult.visionProfile && testResult.visionProfile.result === 1) {
+            console.log(`通过测试API验证成功，${id} 是有效的快手ID`);
+            return true;
+          } else if (testResult && testResult.visionProfile && testResult.visionProfile.result !== 1) {
+            console.log(`API验证显示ID无效，错误码: ${testResult.visionProfile.result}`);
+            return false;
+          }
+        } catch (apiError) {
+          console.log(`API验证ID时出错: ${apiError.message}`);
+          // 出错后继续尝试HTTP方式
+        }
+      } else {
+        console.log('客户端未初始化，跳过API验证，直接使用HTTP请求验证');
+      }
+      
+      // 尝试通过HTTP请求验证
+      console.log(`尝试通过HTTP请求验证ID: ${id}...`);
+      
+      // 创建一个超时控制
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 15000); // 15秒超时
+      
+      try {
+        const response = await fetch(`https://www.kuaishou.com/profile/${id}`, {
+          method: 'GET',
+          headers: {
+            'User-Agent': this.userAgent || 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36',
+          },
+          redirect: 'follow',
+          signal: controller.signal
+        });
+        
+        clearTimeout(timeoutId); // 清除超时
+        
+        // 检查响应状态
+        if (response.ok) {
+          // 检查是否重定向到错误页面
+          const finalUrl = response.url;
+          if (finalUrl.includes('/error') || finalUrl.includes('/notfound')) {
+            console.log(`请求重定向到错误页面: ${finalUrl}，${id} 不是有效的快手ID`);
+            return false;
+          }
+          
+          // 尝试读取响应内容检查是否有用户信息
+          const html = await response.text();
+          
+          // 如果页面包含特定的错误信息或空页面标记，则认为ID无效
+          if (html.includes('抱歉，页面不存在') || 
+              html.includes('用户不存在') || 
+              html.includes('not-found') ||
+              html.includes('找不到此用户') ||
+              html.includes('errorContent')) {
+            console.log(`响应内容表明用户不存在，${id} 不是有效的快手ID`);
+            return false;
+          }
+          
+          // 检查是否包含用户信息的关键指标
+          const hasUserInfoMarkers = 
+            html.includes('"userId"') || 
+            html.includes('user-info') || 
+            html.includes('detail-user-name') ||
+            html.includes('"ownerCount"');
+            
+          if (hasUserInfoMarkers) {
+            // 补充验证：检查页面是否包含具体用户内容
+            const hasActualContent = 
+              html.includes('detail-user-desc') || 
+              html.includes('profile-user-name') ||
+              (html.includes('user_name') && html.includes('headurl'));
+              
+            if (hasActualContent) {
+              console.log(`响应中包含用户信息标记和实际内容，${id} 是有效的快手ID`);
+              return true;
+            } else {
+              console.log(`响应中包含用户信息标记但缺少实际内容，可能是空白页面，再次验证...`);
+              // 这里可以选择性地添加额外的验证步骤
+              return false;
+            }
+          } else {
+            console.log(`响应中不包含用户信息标记，${id} 可能不是有效的快手ID`);
+            return false;
+          }
+        } else {
+          console.log(`HTTP请求失败，状态码: ${response.status}，${id} 可能不是有效的快手ID`);
+          return false;
+        }
+      } catch (fetchError) {
+        clearTimeout(timeoutId); // 清除超时
+        
+        if (fetchError.name === 'AbortError') {
+          console.log(`HTTP请求超时，无法验证ID: ${id}`);
+        } else {
+          console.log(`HTTP请求出错: ${fetchError.message}`);
+        }
+        return false;
+      }
+    } catch (error) {
+      console.error(`验证快手ID ${id} 时出错:`, error);
+      return false;
+    }
+  }
+
+  /**
    * 通过快手号获取用户信息
    * @param {string} kuaishouId 快手号
    * @returns {Promise<object>} 用户信息
@@ -1017,15 +1785,25 @@ class KuaishouCrawler extends AbstractCrawler {
   async getUserProfile(kuaishouId) {
     console.log(`开始获取快手号为 ${kuaishouId} 的用户信息`);
     
+    // 确保有客户端，但避免重复初始化
     if (!this.ksClient) {
       console.log('KuaiShou客户端未初始化，正在初始化...');
       try {
-        await this.createKsClient();
+        // 检查是否已有浏览器实例运行
+        if (this.browserContext && this.browser) {
+          console.log('检测到现有浏览器实例，使用现有实例创建客户端');
+          this.ksClient = await this.createKsClient();
+        } else {
+          console.log('未检测到现有浏览器实例，完整初始化客户端');
+          await this.createKsClient();
+        }
       } catch (error) {
         console.log('初始化客户端失败，使用基本客户端:', error);
         const KuaiShouClient = require('./client');
         this.ksClient = new KuaiShouClient({}, this.userAgent);
       }
+    } else {
+      console.log('使用现有KuaiShou客户端');
     }
     
     try {
@@ -1044,10 +1822,10 @@ class KuaishouCrawler extends AbstractCrawler {
           name: user.name,
           gender: userProfile.profile.gender,
           avatar: user.avatar,
-          fans_count: userProfile.ownerCount.fan,
-          follow_count: userProfile.ownerCount.follow,
-          photo_count: userProfile.ownerCount.photo,
-          liked_count: userProfile.ownerCount.liked,
+          fans_count: userProfile.ownerCount?.fan || 0,
+          follow_count: userProfile.ownerCount?.follow || 0,
+          photo_count: userProfile.ownerCount?.photo || 0,
+          liked_count: userProfile.ownerCount?.liked || 0,
           is_following: user.isFollowing,
           is_follower: user.isFollower,
           living: user.living
@@ -1082,10 +1860,10 @@ class KuaishouCrawler extends AbstractCrawler {
             avatar: userProfile.profile.headurl,
             description: userProfile.profile.user_text,
             background: userProfile.profile.user_profile_bg_url,
-            fans_count: userProfile.ownerCount.fan,
-            follow_count: userProfile.ownerCount.follow,
-            photo_count: userProfile.ownerCount.photo,
-            photo_public_count: userProfile.ownerCount.photo_public,
+            fans_count: userProfile.ownerCount?.fan || 0,
+            follow_count: userProfile.ownerCount?.follow || 0,
+            photo_count: userProfile.ownerCount?.photo || 0,
+            photo_public_count: userProfile.ownerCount?.photo_public || 0,
             is_following: userProfile.isFollowing
           };
           
@@ -1124,10 +1902,10 @@ class KuaishouCrawler extends AbstractCrawler {
             avatar: userProfile.profile.headurl,
             description: userProfile.profile.user_text,
             background: userProfile.profile.user_profile_bg_url,
-            fans_count: userProfile.ownerCount.fan,
-            follow_count: userProfile.ownerCount.follow,
-            photo_count: userProfile.ownerCount.photo,
-            photo_public_count: userProfile.ownerCount.photo_public,
+            fans_count: userProfile.ownerCount?.fan || 0,
+            follow_count: userProfile.ownerCount?.follow || 0,
+            photo_count: userProfile.ownerCount?.photo || 0,
+            photo_public_count: userProfile.ownerCount?.photo_public || 0,
             is_following: userProfile.isFollowing
           };
           
@@ -1162,20 +1940,30 @@ class KuaishouCrawler extends AbstractCrawler {
   async getUserVideos(userId, maxCount = 20) {
     console.log(`开始获取用户 ${userId} 的视频列表，最大数量: ${maxCount}`);
     
+    // 确保有客户端，但避免重复初始化
     if (!this.ksClient) {
       console.log('KuaiShou客户端未初始化，正在初始化...');
       try {
-        await this.createKsClient();
+        // 检查是否已有浏览器实例运行
+        if (this.browserContext && this.browser) {
+          console.log('检测到现有浏览器实例，使用现有实例创建客户端');
+          this.ksClient = await this.createKsClient();
+        } else {
+          console.log('未检测到现有浏览器实例，完整初始化客户端');
+          await this.createKsClient();
+        }
       } catch (error) {
         console.log('初始化客户端失败，使用基本客户端:', error);
         const KuaiShouClient = require('./client');
         this.ksClient = new KuaiShouClient({}, this.userAgent);
       }
+    } else {
+      console.log('使用现有KuaiShou客户端');
     }
     
     try {
       // 为用户创建保存目录
-      const savePath = path.resolve(this.dataRootDir, 'user_videos');
+      const savePath = path.join(this.dataRootDir, 'user_videos');
       await utils.ensureDir(savePath);
       
       // 删除之前的文件

@@ -10,7 +10,7 @@
   "max_comment_pages": 3,
   "get_comments": true,
   "get_video_detail": true,
-  "headless": true,
+  "headless": false,
   "use_proxy": false,
   "ip_proxy_info": {
     "ip": "",

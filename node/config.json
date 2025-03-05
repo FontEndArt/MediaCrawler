@@ -10,7 +10,7 @@
   "max_comment_pages": 3,
   "get_comments": true,
   "get_video_detail": true,
-  "headless": false,
+  "headless": true,
   "use_proxy": false,
   "ip_proxy_info": {
     "ip": "",
@@ -19,5 +19,16 @@
     "password": ""
   },
   "login_type": "qrcode",
-  "cookies": ""
+  "cookies": "",
+  
+  "schedule_enabled": true,
+  "schedule_interval": 60,
+  "monitor_user_list": [
+    "3xucq5qcjzztpss"
+  ],
+  "video_filter": {
+    "days_limit": 30,
+    "min_likes": 20,
+    "save_video_url": true
+  }
 }

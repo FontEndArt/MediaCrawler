@@ -1,6 +1,7 @@
 const userAgents = require('user-agents');
 const fs = require('fs').promises;
 const path = require('path');
+const fsSync = require('fs');
 
 /**
  * 获取随机的User-Agent
@@ -107,10 +108,65 @@ async function loadConfig(configPath) {
   }
 }
 
+/**
+ * 清理过期数据
+ * @param {string} directory 要清理的目录
+ * @param {number} maxAgeDays 文件保留的最大天数
+ * @returns {Promise<number>} 清理的文件数量
+ */
+async function cleanupOldFiles(directory, maxAgeDays = 1) {
+  console.log(`开始清理 ${directory} 目录中超过 ${maxAgeDays} 天的文件...`);
+  
+  try {
+    // 确保目录存在
+    await ensureDir(directory);
+    
+    // 获取当前时间
+    const now = Date.now();
+    // 计算过期时间（当前时间减去最大保留天数转换为毫秒）
+    const expireTime = now - (maxAgeDays * 24 * 60 * 60 * 1000);
+    
+    // 读取目录中的所有文件
+    const files = await fs.readdir(directory);
+    let deletedCount = 0;
+    
+    // 遍历处理每个文件
+    for (const file of files) {
+      const filePath = path.join(directory, file);
+      
+      try {
+        // 获取文件状态
+        const stats = await fs.stat(filePath);
+        
+        // 如果是文件（非目录）且修改时间早于过期时间，则删除
+        if (stats.isFile() && stats.mtimeMs < expireTime) {
+          await fs.unlink(filePath);
+          console.log(`已删除过期文件: ${filePath}`);
+          deletedCount++;
+        }
+        // 如果是目录，递归清理
+        else if (stats.isDirectory()) {
+          const subdirDeletedCount = await cleanupOldFiles(filePath, maxAgeDays);
+          deletedCount += subdirDeletedCount;
+        }
+      } catch (err) {
+        console.error(`处理文件 ${filePath} 时出错:`, err);
+      }
+    }
+    
+    console.log(`${directory} 目录清理完成，共删除 ${deletedCount} 个过期文件`);
+    return deletedCount;
+  } catch (err) {
+    console.error(`清理目录 ${directory} 时出错:`, err);
+    return 0;
+  }
+}
+
 module.exports = {
   getUserAgent,
   sleep,
   ensureDir,
   saveToJson,
-  loadConfig
+  loadConfig,
+  cleanupOldFiles
 }; 

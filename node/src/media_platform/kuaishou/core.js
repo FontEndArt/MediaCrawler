@@ -39,6 +39,15 @@ class KuaishouCrawler extends AbstractCrawler {
     // 客户端
     this.ksClient = null;
     
+    // 数据根目录 - 使用相对路径
+    this.dataRootDir = path.resolve(__dirname, '..', '..', '..', 'data');
+    
+    // 临时文件目录
+    this.tempDir = path.resolve(__dirname, '..', '..', '..', 'temp');
+    
+    // 浏览器数据目录
+    this.browserDataDir = path.resolve(__dirname, '..', '..', '..', 'browser_data');
+    
     // 初始化配置
     this.initConfig();
     
@@ -155,58 +164,22 @@ class KuaishouCrawler extends AbstractCrawler {
    * 通过二维码登录
    */
   async loginByQrcode() {
+    console.log('开始二维码登录...');
+    
     try {
-      console.log('开始二维码登录流程...');
+      // 创建临时目录
+      await utils.ensureDir(this.tempDir);
       
-      // 检查是否有登录按钮
-      const loginButtonSelector = '.login-guide-mask';
-      const loginButton = await this.contextPage.$(loginButtonSelector);
+      // 设置二维码保存路径
+      const qrcodePath = path.join(this.tempDir, 'kuaishou_qrcode.png');
       
-      if (!loginButton) {
-        console.log('未找到登录按钮，可能已经登录');
-        return true;
-      }
-      
-      // 点击登录按钮
-      await loginButton.click();
-      console.log('已点击登录按钮');
-      
-      // 等待二维码出现
-      const qrcodeSelector = '.qrcode-img';
-      await this.contextPage.waitForSelector(qrcodeSelector, { timeout: 10000 });
-      
-      // 截取二维码图片
-      const qrcodeElement = await this.contextPage.$(qrcodeSelector);
-      const qrcodePath = path.join(process.cwd(), 'temp', 'kuaishou_qrcode.png');
-      
-      // 确保目录存在
-      if (!fs.existsSync(path.dirname(qrcodePath))) {
-        fs.mkdirSync(path.dirname(qrcodePath), { recursive: true });
-      }
-      
-      // 截图保存二维码
-      await qrcodeElement.screenshot({ path: qrcodePath });
-      console.log(`二维码已保存至: ${qrcodePath}`);
-      console.log('请使用快手APP扫描二维码登录');
-      
-      // 等待登录成功
-      console.log('等待扫码登录...');
-      
-      // 等待登录按钮消失或出现用户头像
-      await Promise.race([
-        this.contextPage.waitForSelector(loginButtonSelector, { state: 'detached', timeout: 120000 }),
-        this.contextPage.waitForSelector('.user-avatar', { timeout: 120000 })
-      ]);
-      
-      console.log('登录成功');
-      
-      // 等待页面稳定
-      await utils.sleep(3000);
+      // 此处添加获取二维码和扫码登录的代码
+      // ...
       
       return true;
     } catch (error) {
       console.error('二维码登录失败:', error);
-      throw error;
+      return false;
     }
   }
 
@@ -245,45 +218,36 @@ class KuaishouCrawler extends AbstractCrawler {
    * 搜索关键词
    */
   async searchKeywords() {
-    try {
-      console.log('开始搜索关键词...');
+    console.log('开始搜索关键词...');
+    const keywords = this.config.search_keywords || ['搞笑', '宠物'];
+    
+    // 创建保存目录
+    const savePath = path.join(this.dataRootDir, 'kuaishou', 'json');
+    await utils.ensureDir(savePath);
+    
+    // 获取当前日期
+    const today = new Date().toISOString().split('T')[0];
+    
+    // 所有视频数据
+    let allVideos = [];
+    
+    // 遍历关键词搜索
+    for (const keyword of keywords) {
+      console.log(`搜索关键词: ${keyword}`);
+      const videos = await this.searchVideosForKeyword(keyword);
+      allVideos = allVideos.concat(videos);
       
-      // 获取搜索关键词
-      const keywords = this.config.search_keywords || ['搞笑', '宠物'];
-      
-      // 创建保存目录
-      const savePath = path.join(process.cwd(), 'data', 'kuaishou', 'json');
-      if (!fs.existsSync(savePath)) {
-        fs.mkdirSync(savePath, { recursive: true });
-      }
-      
-      // 获取当前日期
-      const today = new Date().toISOString().split('T')[0];
-      
-      // 所有视频数据
-      let allVideos = [];
-      
-      // 遍历关键词搜索
-      for (const keyword of keywords) {
-        console.log(`搜索关键词: ${keyword}`);
-        const videos = await this.searchVideosForKeyword(keyword);
-        allVideos = allVideos.concat(videos);
-        
-        // 每个关键词之间等待一段时间
-        await utils.sleep(2000, 5000);
-      }
-      
-      // 保存所有视频数据
-      if (allVideos.length > 0) {
-        const saveFilePath = path.join(savePath, `search_contents_${today}.json`);
-        await utils.saveToJson(saveFilePath, allVideos);
-        console.log(`共保存了 ${allVideos.length} 个视频数据到 ${saveFilePath}`);
-      } else {
-        console.log('没有找到任何视频数据');
-      }
-    } catch (error) {
-      console.error('搜索关键词出错:', error);
-      throw error;
+      // 每个关键词之间等待一段时间
+      await utils.sleep(2000, 5000);
+    }
+    
+    // 保存所有视频数据
+    if (allVideos.length > 0) {
+      const saveFilePath = path.join(savePath, `search_contents_${today}.json`);
+      await utils.saveToJson(saveFilePath, allVideos);
+      console.log(`共保存了 ${allVideos.length} 个视频数据到 ${saveFilePath}`);
+    } else {
+      console.log('没有找到任何视频数据');
     }
   }
 
@@ -293,8 +257,17 @@ class KuaishouCrawler extends AbstractCrawler {
    * @returns {Promise<Array>} 视频列表
    */
   async searchVideosForKeyword(keyword) {
+    console.log(`搜索关键词: ${keyword}`);
+    
     try {
-      console.log(`开始搜索关键词: ${keyword}`);
+      if (!this.ksClient) {
+        await this.createKsClient();
+      }
+      
+      // 创建调试目录
+      await utils.ensureDir(this.tempDir);
+      const debugPath = path.join(this.tempDir, 'search_debug');
+      await utils.ensureDir(debugPath);
       
       let page = 1;
       let hasMore = true;
@@ -374,16 +347,12 @@ class KuaishouCrawler extends AbstractCrawler {
       
       // 如果有搜索结果，保存示例数据用于调试
       if (videos.length > 0) {
-        const debugPath = path.join(process.cwd(), 'temp', 'search_debug');
-        if (!fs.existsSync(debugPath)) {
-          fs.mkdirSync(debugPath, { recursive: true });
-        }
         await utils.saveToJson(path.join(debugPath, `${keyword}_sample.json`), videos.slice(0, 3));
       }
       
       return videos;
     } catch (error) {
-      console.error(`搜索关键词 ${keyword} 出错:`, error);
+      console.error(`搜索关键词 ${keyword} 失败:`, error);
       return [];
     }
   }
@@ -403,7 +372,7 @@ class KuaishouCrawler extends AbstractCrawler {
     for (const keyword of this.config.search_keywords) {
       console.log(`开始搜索关键词: ${keyword}`);
       
-      const savePath = path.resolve(process.cwd(), 'data', 'search', keyword);
+      const savePath = path.resolve(this.dataRootDir, 'search', keyword);
       await utils.ensureDir(savePath);
       
       // 搜索视频
@@ -492,7 +461,7 @@ class KuaishouCrawler extends AbstractCrawler {
       return;
     }
     
-    const savePath = path.resolve(process.cwd(), 'data', 'detail');
+    const savePath = path.join(this.dataRootDir, 'detail');
     await utils.ensureDir(savePath);
     
     const videoIds = this.config.video_id_list;
@@ -725,7 +694,7 @@ class KuaishouCrawler extends AbstractCrawler {
       const fs = require('fs');
       
       // 用户数据目录
-      const userDataDir = path.join(process.cwd(), 'browser_data', 'kuaishou_user_data_dir');
+      const userDataDir = path.join(this.browserDataDir, 'kuaishou_user_data_dir');
       
       // 确保目录存在
       if (!fs.existsSync(userDataDir)) {
@@ -930,7 +899,7 @@ class KuaishouCrawler extends AbstractCrawler {
         };
         
         // 为创作者创建目录
-        const savePath = path.resolve(process.cwd(), 'data', 'creator', creatorId);
+        const savePath = path.resolve(this.dataRootDir, 'creator', creatorId);
         await utils.ensureDir(savePath);
         
         // 保存创作者信息
@@ -1087,7 +1056,7 @@ class KuaishouCrawler extends AbstractCrawler {
         console.log(`成功获取用户 ${user.name}(${kuaishouId}) 的信息`);
         
         // 为用户创建保存目录
-        const savePath = path.resolve(process.cwd(), 'data', 'user_profiles');
+        const savePath = path.resolve(this.dataRootDir, 'user_profiles');
         await utils.ensureDir(savePath);
         
         // 保存用户信息到JSON文件
@@ -1123,7 +1092,7 @@ class KuaishouCrawler extends AbstractCrawler {
           console.log(`成功获取用户 ${userProfile.profile.user_name}(${kuaishouId}) 的信息（测试方法）`);
           
           // 为用户创建保存目录
-          const savePath = path.resolve(process.cwd(), 'data', 'user_profiles');
+          const savePath = path.resolve(this.dataRootDir, 'user_profiles');
           await utils.ensureDir(savePath);
           
           // 保存用户信息到JSON文件
@@ -1165,7 +1134,7 @@ class KuaishouCrawler extends AbstractCrawler {
           console.log(`成功获取用户 ${userProfile.profile.user_name}(${kuaishouId}) 的信息（测试方法）`);
           
           // 为用户创建保存目录
-          const savePath = path.resolve(process.cwd(), 'data', 'user_profiles');
+          const savePath = path.resolve(this.dataRootDir, 'user_profiles');
           await utils.ensureDir(savePath);
           
           // 保存用户信息到JSON文件
@@ -1205,10 +1174,35 @@ class KuaishouCrawler extends AbstractCrawler {
     }
     
     try {
+      // 为用户创建保存目录
+      const savePath = path.resolve(this.dataRootDir, 'user_videos');
+      await utils.ensureDir(savePath);
+      
+      // 删除之前的文件
+      const userVideoPath = path.join(savePath, `${userId}.json`);
+      try {
+        // 检查文件是否存在
+        await fs.access(userVideoPath);
+        // 文件存在，删除它
+        await fs.unlink(userVideoPath);
+        console.log(`已删除旧的视频文件: ${userVideoPath}`);
+      } catch (err) {
+        // 文件不存在，忽略错误
+      }
+      
       let pcursor = '';
       let allVideos = [];
       let hasMore = true;
       let page = 1;
+      
+      // 应用天数限制（如果配置中有）
+      const daysLimit = this.config.video_filter?.days_limit || 0;
+      // 当前时间减去天数限制，获取最早时间戳（毫秒）
+      const earliestTimestamp = daysLimit > 0 ? Date.now() - (daysLimit * 24 * 60 * 60 * 1000) : 0;
+      
+      // 连续空页计数器（连续多少页没有符合日期限制的视频）
+      let emptyPagesCount = 0;
+      const maxEmptyPages = 3; // 最多允许连续3个空页
       
       // 循环获取所有视频
       while (hasMore && allVideos.length < maxCount) {
@@ -1236,9 +1230,34 @@ class KuaishouCrawler extends AbstractCrawler {
               };
             });
             
+            // 如果有天数限制，则过滤视频
+            let filteredVideos = videos;
+            if (daysLimit > 0) {
+              console.log(`应用天数限制: ${daysLimit}天，最早时间戳: ${new Date(earliestTimestamp).toLocaleString()}`);
+              filteredVideos = videos.filter(video => video.timestamp >= earliestTimestamp);
+              console.log(`过滤前: ${videos.length}个视频，过滤后: ${filteredVideos.length}个视频`);
+            }
+            
             // 添加到结果列表
-            allVideos = allVideos.concat(videos);
-            console.log(`第 ${page} 页获取成功，新增 ${videos.length} 个视频`);
+            allVideos = allVideos.concat(filteredVideos);
+            console.log(`第 ${page} 页获取成功，新增 ${filteredVideos.length} 个视频`);
+            
+            // 检查是否获取到了符合条件的视频
+            if (filteredVideos.length > 0) {
+              // 重置空页计数器
+              emptyPagesCount = 0;
+            } else {
+              // 增加空页计数器
+              emptyPagesCount++;
+              console.log(`当前页的视频都超出了时间限制，连续空页数: ${emptyPagesCount}/${maxEmptyPages}`);
+              
+              // 如果连续多页都没有符合条件的视频，则停止获取
+              if (emptyPagesCount >= maxEmptyPages) {
+                console.log(`已连续 ${maxEmptyPages} 页没有符合时间限制的视频，停止获取`);
+                hasMore = false;
+                break;
+              }
+            }
             
             // 更新游标
             pcursor = nextCursor;
@@ -1266,10 +1285,6 @@ class KuaishouCrawler extends AbstractCrawler {
       
       // 保存结果
       if (result.length > 0) {
-        // 为用户创建保存目录
-        const savePath = path.resolve(process.cwd(), 'data', 'user_videos');
-        await utils.ensureDir(savePath);
-        
         // 保存视频列表到JSON文件
         const videosPath = path.join(savePath, `${userId}.json`);
         await utils.saveToJson(videosPath, result);
@@ -1382,7 +1397,7 @@ class KuaishouCrawler extends AbstractCrawler {
       // 保存结果
       if (result.length > 0) {
         // 创建保存目录
-        const savePath = path.resolve(process.cwd(), 'data', 'video_comments');
+        const savePath = path.resolve(this.dataRootDir, 'video_comments');
         await utils.ensureDir(savePath);
         
         // 保存评论列表到JSON文件

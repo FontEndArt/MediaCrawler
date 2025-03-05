@@ -283,7 +283,7 @@ async function monitorUsers() {
               if (video.like_count) {
                 if (typeof video.like_count === 'string') {
                   // 处理可能带有"万"等后缀的字符串
-                  if (video.like_count.includes('万')) {
+                  if (video.like_count.includes('万') || video.like_count.includes('w')) {
                     likeCount = parseFloat(video.like_count) * 10000;
                   } else {
                     likeCount = parseInt(video.like_count.replace(/,/g, ''));

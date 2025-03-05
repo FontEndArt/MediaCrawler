@@ -10,13 +10,13 @@
   "max_comment_pages": 3,
   "get_comments": true,
   "get_video_detail": true,
-  "headless": false,
+  "headless": true,
   "use_proxy": false,
   "ip_proxy_info": {
-    "ip": "",
-    "port": "",
-    "username": "",
-    "password": ""
+    "ip": "n483.kdltps.com",
+    "port": "15818",
+    "username": "t14115962817841",
+    "password": "f1xgxou1"
   },
   "login_type": "qrcode",
   "cookies": "",
@@ -24,11 +24,13 @@
   "schedule_enabled": true,
   "schedule_interval": 60,
   "monitor_user_list": [
-    "3xucq5qcjzztpss"
+    "3xi7np85kp5rfms",
+    "3xp5bhbnv7v8nce",
+    "3xmp67hm6w9eixg"
   ],
   "video_filter": {
-    "days_limit": 30,
-    "min_likes": 20,
+    "days_limit": 7,
+    "min_likes": 10000,
     "save_video_url": true
   }
 }

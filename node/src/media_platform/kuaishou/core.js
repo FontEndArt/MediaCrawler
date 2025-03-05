@@ -268,11 +268,14 @@ class KuaishouCrawler extends AbstractCrawler {
             console.log(`无法从图片识别二维码内容，请直接打开保存的图片: ${qrcodePath}`);
           }
           
-          console.log('请在60秒内完成扫码登录\n');
-          
           // 检查登录状态
           let loginSuccess = false;
           const maxAttempts = 60; // 最多尝试60次，每次等待1秒，总共60秒
+          
+          console.log('\n请在60秒内完成扫码登录');
+          // 使用进度条样式在同一行更新等待状态
+          process.stdout.write('等待登录中... [0%] □□□□□□□□□□ 0/60\r');
+          
           for (let i = 0; i < maxAttempts; i++) {
             // 检查cookies中是否包含登录凭证
             const cookies = await this.browserContext.cookies();
@@ -282,13 +285,24 @@ class KuaishouCrawler extends AbstractCrawler {
             
             if (hasLoginCookies) {
               loginSuccess = true;
-              console.log('登录成功，检测到登录cookies');
+              process.stdout.write('登录成功，检测到登录cookies                                           \n');
               break;
             }
             
-            console.log(`等待登录中... (${i+1}/${maxAttempts})`);
+            // 计算进度百分比
+            const percent = Math.floor((i + 1) / maxAttempts * 100);
+            // 计算进度条填充数量 (总长度10)
+            const filledLength = Math.floor(percent / 10);
+            const progressBar = '■'.repeat(filledLength) + '□'.repeat(10 - filledLength);
+            
+            // 在同一行更新等待状态
+            process.stdout.write(`等待登录中... [${percent}%] ${progressBar} ${i+1}/60\r`);
+            
             await this.contextPage.waitForTimeout(1000);
           }
+          
+          // 确保最后一行输出完整
+          process.stdout.write('\n');
           
           if (!loginSuccess) {
             console.log('登录超时或取消，请稍后重试');
